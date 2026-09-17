@@ -1,0 +1,28 @@
+[project]
+name = "stega"
+version = "0.1.0"
+description = "Screen-to-camera data channel: hide/transmit ~1MB in an MP4, recover it from a phone re-recording"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.5.3",
+    "opencv-python-headless>=5.0.0.93",
+    "reedsolo>=1.7.0",
+]
+
+[project.scripts]
+stega = "stega.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["stega"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
