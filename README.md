@@ -132,8 +132,8 @@ VERDICT: good. Record the real transmission the same way.
 | dense    | 240×135 |  8 | 1 | 40/242 | 2998 | 10  |  ~44 s | steady, close, 1080p+ |
 | color4   | 160×90  | 12 | 2 | 48/244 | 2330 | 10  |  ~56 s | 1080p+ (color needs resolution) |
 | color8   | 137×77  | 14 | 3 | 56/253 | 2336 | 7.5 |  ~75 s | steady, in focus, 1080p+ |
-| uhd      | 480×270 |  8 | 2 | 48/254 | 24401 | 30 |  ~1.7 s | **4K screen + 4K/60 fps recording** — see below |
-| uhd3     | 480×270 |  8 | 3 | 56/254 | 35212 | 30 |  ~1.2 s | same, experimental |
+| uhd      | 480×270 |  8 | 2 | 48/252 | 24192 | 30 |  ~1.8 s | **4K screen + 4K/60 fps recording**, 8 bands — see below |
+| uhd3     | 480×270 |  8 | 3 | 56/246 | 34720 | 30 |  ~1.2 s | same; the 270 MB-in-5-min configuration |
 
 `encode` also takes `--hold N` (video frames each code frame is shown; lower = faster but needs a
 higher-fps camera) and `--overhead F` (extra repair frames per generation; lower = shorter but less
@@ -151,18 +151,29 @@ The `uhd` profiles draw a 3840×2160 code canvas, hold each code frame for 2 fra
 | `uhd`  (8 px, 2 bit colour, overhead 12%) | 5.1 Mbps | ~184 MB | ~7.3 min |
 | `uhd3` (8 px, 3 bit colour, overhead 10%) | 7.4 Mbps | ~265 MB | ~5.1 min |
 
-Status, measured with the 4K phone simulator (`camsim --size 3840x2160 --cam-fps 60`):
+Each 4K code frame is split into **8 horizontal bands**, each an independent fountain symbol with its own
+header, CRC and Reed–Solomon codewords. A rolling shutter reads the sensor row by row, so a capture taken
+while the screen switches code frames shows frame *t* on top and *t+1* below; with bands, every band
+above or below the tear still decodes (before, the whole capture was discarded — ~50% of all captures at
+hold=2), and a frame is no longer lost because one of its ~100 codewords fails.
 
-- **`uhd` decodes in 5 of 8 randomly sampled handheld setups.** When it works, every code frame is
-  recovered; when it fails, almost every capture fails. Failures cluster at high moiré (the monitor's RGB
-  subpixel stripes aliasing with the camera grid — a *colour* pattern that hurts colour cells) and
-  depend on distance. Because the outcome is decided by the setup, **run `stega check` on a 10 s trial and
-  move the phone slightly until it reports "good"**, then record the full transmission from there.
-- **`uhd3` reaches ~91% of its code frames** — just short of what its fountain overhead covers. It is the
-  configuration that meets 270 MB / 5 min on paper; making it reliable is the next workstream
-  (sub-framing so that rolling-shutter-torn captures are not discarded whole).
-- Even when decoding succeeds, ~50% of captures are torn across a code-frame change (hold=2 at 60 fps is
-  the limit); those are currently discarded entirely.
+Status, measured with the 4K phone simulator (`camsim --size 3840x2160 --cam-fps 60`, 8 sampled
+handheld setups, 12% fountain overhead):
+
+| | symbol coverage per setup | decoded |
+|---|---|---|
+| `uhd3`, 1 band (before) | 73% on a good setup | 0 of 2 tried |
+| `uhd3`, 8 bands | 98, 99, 100, 95% (good setups) · 89, 86, 81, 69% (moiré-heavy) | **4 / 8** |
+
+- On good setups `uhd3` delivers **~265 MB per 5 minutes** (270 MB in ~5.1 min) with 95–100% coverage.
+- Bad setups now degrade *partially* instead of collapsing; more fountain overhead covers part of the gap
+  (`--overhead 0.25`: ~237 MB per 5 min, rescued one of the four).
+- **Run `stega check` on a 10 s trial and adjust distance/angle until it reports "good"**, then record the
+  full transmission from there. Moiré (the monitor's RGB subpixel stripes aliasing with the camera grid)
+  is distance-sensitive and is the main reason a setup fails.
+- Known limit, tracked next: the fountain code is split into independent generations of 256 symbols and
+  *every* generation must complete. At 270 MB that is ~255 generations, so per-generation variance — not
+  average coverage — becomes the deciding risk.
 
 Requirements and pitfalls:
 - **A real 3840×2160 monitor showing the video 1:1.** A laptop panel (e.g. 2880/3024/3456 px wide)
@@ -201,6 +212,10 @@ experiments with longer holds.
       → descramble/de-interleave → RS decode (retry low-confidence bytes as erasures) → CRC32
       ─► per-session fountain decode (stops as soon as one file is solvable) ─► SHA-256 verify ─► file
 ```
+
+Large profiles split each code frame into horizontal **bands** (`Profile.bands`), each its own
+header + CRC + RS unit carrying one fountain symbol, so captures torn by the rolling shutter or damaged
+in one region still contribute the intact bands.
 
 The **fountain code** is why interrupted or partial recordings still work: the file is spread across frames
 so that *any* sufficiently large subset of distinct frames reconstructs it. Lost, blurred, or

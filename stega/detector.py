@@ -31,8 +31,11 @@ SEARCH = 3  # alignment search radius in cells
 class FrameResult:
     status: str  # nofinder | noorient | banner | rsfail | dup | ok
     profile: str | None = None
-    header: FrameHeader | None = None
+    header: FrameHeader | None = None  # first decoded band (single-band profiles: the frame)
     symbol: bytes = b""
+    payloads: list = field(default_factory=list)  # (header, symbol) of every decoded band; b"" = already known
+    bands: int = 0
+    bands_ok: int = 0
     pn_score: float = 0.0
     fixed_ber: float = 1.0
     align_ok: float = 0.0
@@ -522,8 +525,8 @@ def eq_betas(N: np.ndarray, lay: Layout) -> tuple[float, ...]:
     return tuple(dict.fromkeys(round(x, 3) for x in (b, b * 0.6, b * 1.4, 0.0)))
 
 
-def classify(N: np.ndarray, lay: Layout):
-    """-> (scrambled byte stream, per-byte confidence, symbols)."""
+def classify_cells(N: np.ndarray, lay: Layout) -> tuple[np.ndarray, np.ndarray]:
+    """-> (palette index, decision margin) for every data cell, in transmission order."""
     bpc = lay.profile.bits_per_cell
     r, c = lay.data_rc
     X = N[r, c]  # (n, 3)
@@ -541,11 +544,18 @@ def classify(N: np.ndarray, lay: Layout):
         part = np.partition(d, 1, axis=1)
         sym = d.argmin(axis=1).astype(np.uint8)
         margin = part[:, 1] - part[:, 0]
+    return sym, margin
+
+
+def classify(N: np.ndarray, lay: Layout):
+    """Whole-frame view: -> (scrambled byte stream, per-byte confidence, symbols). Mostly for analysis;
+    decoding goes band by band via UnitCodec.stream_from_cells."""
+    bpc = lay.profile.bits_per_cell
+    sym, margin = classify_cells(N, lay)
     cap = lay.capacity_bytes
     bits = symbols_to_bits(sym, bpc)[: cap * 8]
-    stream = np.packbits(bits)
     conf = np.repeat(margin, bpc)[: cap * 8].reshape(cap, 8).min(axis=1)
-    return stream, conf, sym
+    return np.packbits(bits), conf, sym
 
 
 def fixed_cell_ber(N: np.ndarray, lay: Layout) -> float:
@@ -611,13 +621,20 @@ def read_frame(
         return res
     name, N = chosen
     codec: FrameCodec = build_codec(name)
-    out = None
+    decoded: dict[int, tuple] = {}
     for beta in eq_betas(N, codec.layout):
-        stream, conf, _ = classify(equalise(N, beta), codec.layout)
-        out = codec.decode(stream, conf, skip=skip)
-        if out is not None:
+        sym, margin = classify_cells(equalise(N, beta), codec.layout)
+        for b, unit in enumerate(codec.units):
+            if b in decoded:
+                continue
+            stream, conf = unit.stream_from_cells(sym, margin)
+            out = unit.decode(stream, conf, skip=skip)
+            if out is not None:
+                decoded[b] = out
+        if len(decoded) == codec.bands:
             break
-    if out is None:
+    res.bands, res.bands_ok = codec.bands, len(decoded)
+    if not decoded:
         # a lead-in/lead-out banner reads cleanly but carries no payload: report it as idle, not as
         # a failure, so "how good is my recording?" statistics stay meaningful
         hard = N[codec.layout.data_rc].mean(axis=1) > 0.5
@@ -626,6 +643,8 @@ def read_frame(
             return res
         res.status = "rsfail"
         return res
-    res.header, res.symbol = out
-    res.status = "dup" if not res.symbol else "ok"
+    res.payloads = [decoded[b] for b in sorted(decoded)]
+    fresh = [p for p in res.payloads if p[1]]
+    res.header, res.symbol = (fresh or res.payloads)[0]
+    res.status = "ok" if fresh else "dup"
     return res

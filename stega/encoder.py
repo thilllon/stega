@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+import random
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,7 +40,8 @@ def plan(profile_name: str, n_bytes: int, overhead: float = 0.25, hold: int | No
     s = codec.symbol_size
     k = max(1, math.ceil(n_bytes / s))
     gens = math.ceil(k / GEN_SIZE)
-    frames = sum(g_k + max(4, math.ceil(g_k * overhead)) for g_k in (min(GEN_SIZE, k - g * GEN_SIZE) for g in range(gens)))
+    symbols = sum(g_k + max(4, math.ceil(g_k * overhead)) for g_k in (min(GEN_SIZE, k - g * GEN_SIZE) for g in range(gens)))
+    frames = math.ceil(symbols / codec.bands)  # each code frame carries `bands` symbols
     secs = frames * hold / p.fps
     return {
         "profile": p.name,
@@ -47,9 +49,10 @@ def plan(profile_name: str, n_bytes: int, overhead: float = 0.25, hold: int | No
         "cell_px": p.cell_px,
         "bits_per_cell": p.bits_per_cell,
         "data_cells": codec.layout.n_data_cells,
-        "rs_blocks": len(codec.block_lens),
-        "ecc": f"{p.ecc_nsym}/{codec.block_lens[0]}",
-        "payload_per_frame": s,
+        "bands": codec.bands,
+        "rs_blocks": len(codec.units[0].block_lens) * codec.bands,
+        "ecc": f"{p.ecc_nsym}/{codec.units[0].block_lens[0]}",
+        "payload_per_frame": codec.frame_payload,
         "code_fps": p.fps / hold,
         "frames": frames,
         "seconds": secs,
@@ -87,8 +90,9 @@ def encode_file(
     session = secrets.randbits(32) if session is None else session
 
     fenc = FountainEncoder(blob, codec.symbol_size, GEN_SIZE, session)
-    order = fenc.schedule(overhead)
+    order = fenc.schedule(overhead, multiple_of=codec.bands)
     fp = fenc.params
+    frames = [order[i : i + codec.bands] for i in range(0, len(order), codec.bands)]
     if max(esi for _, esi in order) >= 1 << 16:
         raise ValueError("too many repair symbols for a 16-bit ESI; lower --overhead")
 
@@ -96,15 +100,19 @@ def encode_file(
         banner = render_banner(layout, [f"STEGA  {p.name}", f"{src.name}  {len(data):,} bytes", "hold the camera steady"])
         vw.write(banner, repeat=max(1, int(lead_in * p.fps)))
         for loop in range(loops):
-            for i, (gen, esi) in enumerate(order):
-                hdr = FrameHeader(p.pid, session, fp.total_len, fp.gen_size, gen, esi)
-                symbols = codec.encode(hdr, fenc.symbol(gen, esi))
-                vw.write(render_frame(layout, symbols), repeat=hold)
+            for i, group in enumerate(frames):
+                # Shuffle which band carries which symbol. Without it, once only a few generations are left in
+                # the round-robin schedule, band b always carries the same generation, and a region the camera
+                # reads badly (moire, glare) starves that one generation while the others have spares.
+                group = list(group)
+                random.Random(i).shuffle(group)
+                items = [(FrameHeader(p.pid, session, fp.total_len, fp.gen_size, g, e), fenc.symbol(g, e)) for g, e in group]
+                vw.write(render_frame(layout, codec.encode_frame(items)), repeat=hold)
                 if progress:
-                    progress(loop * len(order) + i + 1, loops * len(order))
+                    progress(loop * len(frames) + i + 1, loops * len(frames))
         vw.write(render_banner(layout, ["END"]), repeat=p.fps)
 
-    n_frames = len(order) * loops
+    n_frames = len(frames) * loops
     secs = n_frames * hold / p.fps
     return EncodeReport(
         output=str(out),

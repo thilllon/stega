@@ -58,27 +58,27 @@ def test_fountain_repair_only():
 
 @pytest.mark.parametrize("name", list(PROFILES))
 def test_frame_codec_corrects_byte_errors(name):
-    codec = build_codec(name)
-    sym = os.urandom(codec.symbol_size)
-    hdr = FrameHeader(codec.layout.profile.pid, 1, 2, 256, 3, 4)
-    cells = codec.encode(hdr, sym)
     from stega.framing import symbols_to_bits
 
+    codec = build_codec(name)
     bpc = codec.layout.profile.bits_per_cell
-    stream = np.packbits(symbols_to_bits(cells, bpc)[: codec.layout.capacity_bytes * 8])
     rng = np.random.default_rng(0)
-    # exactly 60% of one codeword's correction capacity in EVERY block (uniform random placement would
-    # make many-block frames, e.g. 119 blocks at 4K, fail on Poisson tails rather than on capacity)
-    per_block = int(0.6 * codec.nsym / 2)
-    block_of = np.empty(len(stream), np.int64)  # stream position -> RS block index
-    for b, s in enumerate(codec.block_slices()):
-        block_of[np.isin(codec.interleave, np.arange(s.start, s.stop))] = b
-    for b in range(len(codec.block_lens)):
-        idx = rng.choice(np.flatnonzero(block_of == b), per_block, replace=False)
-        stream[idx] ^= rng.integers(1, 256, per_block, dtype=np.uint8)
-    out = codec.decode(stream, np.ones(len(stream), np.float32))
-    assert out is not None
-    assert out[0] == hdr and out[1] == sym
+    for b, unit in enumerate(codec.units):  # every band is an independent RS/CRC unit
+        sym = os.urandom(unit.symbol_size)
+        hdr = FrameHeader(codec.layout.profile.pid, 1, 2, 256, 3, 4 + b)
+        stream = np.packbits(symbols_to_bits(unit.encode(hdr, sym), bpc)[: unit.capacity_bytes * 8])
+        # exactly 60% of one codeword's correction capacity in EVERY block (uniform random placement would
+        # make many-block units fail on Poisson tails rather than on capacity)
+        per_block = int(0.6 * unit.nsym / 2)
+        block_of = np.empty(len(stream), np.int64)  # stream position -> RS block index
+        for k, sl in enumerate(unit.block_slices()):
+            block_of[np.isin(unit.interleave, np.arange(sl.start, sl.stop))] = k
+        for k in range(len(unit.block_lens)):
+            idx = rng.choice(np.flatnonzero(block_of == k), per_block, replace=False)
+            stream[idx] ^= rng.integers(1, 256, per_block, dtype=np.uint8)
+        out = unit.decode(stream, np.ones(len(stream), np.float32))
+        assert out is not None, b
+        assert out[0] == hdr and out[1] == sym
 
 
 def _perspective_capture(img, seed):
@@ -107,9 +107,8 @@ def _perspective_capture(img, seed):
 @pytest.mark.parametrize("rot", [0, 1, 2])
 def test_frame_survives_synthetic_capture(name, rot):
     codec = build_codec(name)
-    sym = os.urandom(codec.symbol_size)
-    hdr = FrameHeader(codec.layout.profile.pid, 99, 1, 256, 0, 5)
-    img = render_frame(codec.layout, codec.encode(hdr, sym))
+    items = [(FrameHeader(codec.layout.profile.pid, 99, 1, 256, 0, 5 + b), os.urandom(codec.symbol_size)) for b in range(codec.bands)]
+    img = render_frame(codec.layout, codec.encode_frame(items))
     cap = _perspective_capture(img, seed=rot)
     if rot == 1:
         cap = cv2.rotate(cap, cv2.ROTATE_90_CLOCKWISE)  # phone held in portrait
@@ -117,7 +116,7 @@ def test_frame_survives_synthetic_capture(name, rot):
         cap = cv2.flip(cap, 1)  # mirrored (front camera)
     r = read_frame(cap, list(PROFILES))
     assert r.status == "ok", (r.status, r.pn_score, r.fixed_ber)
-    assert r.profile == name and r.header == hdr and r.symbol == sym
+    assert r.profile == name and sorted(r.payloads, key=lambda p: p[0].esi) == items
 
 
 @pytest.mark.parametrize("name", ["balanced", "color4"])
@@ -176,3 +175,64 @@ def test_gray_palette_survives_blurred_capture(monkeypatch):
         assert r.status == "ok" and r.symbol == sym, (sigma, r.status)
         betas.append(estimate_beta(r.debug["N"], codec.layout))
     assert betas[1] > betas[0] + 0.1  # more blur -> stronger equalisation
+
+
+def test_torn_capture_yields_bands_above_and_below_the_tear(monkeypatch):
+    """Rolling shutter: a capture across a code-frame change shows frame t on top and t+1 below.
+    With horizontal bands, every band that does not straddle the tear still decodes."""
+    from stega.profiles import Profile
+
+    p = Profile("t_band8", pid=201, cell_px=12, bits_per_cell=1, ecc_nsym=40, hold_frames=2, bands=8)
+    monkeypatch.setitem(PROFILES, p.name, p)
+    codec = build_codec(p.name)
+    lay = codec.layout
+
+    def frame(esi0):
+        items = [(FrameHeader(p.pid, 9, 1, 256, b, esi0 + b), os.urandom(codec.symbol_size)) for b in range(codec.bands)]
+        return items, render_frame(lay, codec.encode_frame(items))
+
+    top_items, top = frame(0)
+    bottom_items, bottom = frame(100)
+    torn = top.copy()
+    cut = top.shape[0] * 45 // 100
+    torn[cut:] = bottom[cut:]
+    r = read_frame(_perspective_capture(torn, seed=5), [p.name])
+    want_top = {(h.gen, h.esi): s for h, s in top_items}
+    want_bottom = {(h.gen, h.esi): s for h, s in bottom_items}
+    got = {(h.gen, h.esi): s for h, s in r.payloads}
+    for key, sym in got.items():  # nothing decoded wrongly
+        assert {**want_top, **want_bottom}[key] == sym
+    n_top = sum(k in want_top for k in got)
+    n_bottom = sum(k in want_bottom for k in got)
+    assert n_top >= 2 and n_bottom >= 3 and n_top + n_bottom >= codec.bands - 1, (n_top, n_bottom)
+
+
+def test_schedule_fills_whole_multi_band_frames():
+    blob = os.urandom(123_457)
+    enc = FountainEncoder(blob, symbol_size=1000, gen_size=64, session=3)
+    for b in (1, 3, 8):
+        order = enc.schedule(0.1, multiple_of=b)
+        assert len(order) % b == 0 and len(set(order)) == len(order)
+
+
+# Bitstreams recorded before sub-framing existed. Single-band profiles must never change: recordings of
+# videos made with earlier versions (including real phone recordings) have to keep decoding.
+SINGLE_BAND_GOLDEN = {
+    "robust": "00ed5487d076e21f",
+    "balanced": "937d43365c94f7f7",
+    "fast": "a06091f79694c714",
+    "dense": "5d05e9e8c68e9815",
+    "color4": "e8b62869b7261ef3",
+    "color8": "7aab77984a4b7740",
+}
+
+
+@pytest.mark.parametrize("name", list(SINGLE_BAND_GOLDEN))
+def test_single_band_bitstream_is_unchanged(name):
+    import hashlib
+
+    codec = build_codec(name)
+    assert codec.bands == 1
+    sym = hashlib.shake_128(name.encode()).digest(codec.symbol_size)
+    cells = codec.encode(FrameHeader(codec.layout.profile.pid, 0xC0FFEE, 123456, 256, 3, 77), sym)
+    assert hashlib.sha256(cells.tobytes()).hexdigest()[:16] == SINGLE_BAND_GOLDEN[name]

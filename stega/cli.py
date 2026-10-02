@@ -135,10 +135,17 @@ def cmd_check(a) -> int:
           + (f" (excluded: {excluded})" if excluded else ""))
     print(f"  markers found   {len(found):>4}/{n}  ({100 * len(found) / n:.0f}%)")
     print(f"  fully decoded   {len(good):>4}/{n}  ({100 * len(good) / n:.0f}%)   profile: {prof[0][0] if prof else '-'}")
+    band_total = sum(r.bands for r in rows if r.bands)
+    multi = any(r.bands > 1 for r in rows)
+    if multi and band_total:
+        band_ok = sum(r.bands_ok for r in rows)
+        print(f"  bands decoded   {band_ok:>4}/{band_total}  ({100 * band_ok / band_total:.0f}%)   (each band carries its own data)")
     if bers:
         print(f"  cell error rate median {statistics.median(bers):.4f}  worst {max(bers):.4f}  (known marker cells)")
 
-    rate = len(good) / n
+    # what matters is how much data a capture yields: for multi-band profiles that is the band rate
+    # (counted over every capture in playback, including ones whose markers were not found)
+    rate = (sum(r.bands_ok for r in rows) / (max(r.bands for r in rows) * n)) if multi else len(good) / n
     print()
     if rate >= 0.5:
         print("VERDICT: good. Record the real transmission the same way.")
@@ -163,8 +170,9 @@ def cmd_frame(a) -> int:
     from .render import render_frame
 
     codec = build_codec(a.profile)
-    hdr = FrameHeader(codec.layout.profile.pid, 0, codec.symbol_size, 256, 0, 0)
-    img = render_frame(codec.layout, codec.encode(hdr, os.urandom(codec.symbol_size)))
+    pid = codec.layout.profile.pid
+    items = [(FrameHeader(pid, 0, codec.symbol_size, 256, 0, b), os.urandom(codec.symbol_size)) for b in range(codec.bands)]
+    img = render_frame(codec.layout, codec.encode_frame(items))
     if not cv2.imwrite(a.output, cv2.cvtColor(img, cv2.COLOR_RGB2BGR)):
         print(f"stega: error: could not write {a.output}", file=sys.stderr)
         return 1
