@@ -21,7 +21,7 @@ import numpy as np
 
 from .framing import FrameCodec, FrameHeader, build_codec, symbols_to_bits
 from .layout import ALIGN_PATTERN, Layout, banner_bits
-from .render import PALETTES
+from .render import palette
 
 S = 6  # rectified pixels per cell
 SEARCH = 3  # alignment search radius in cells
@@ -192,6 +192,15 @@ def _pn_points(profile_name: str):
     return pts, expect, lay.pn_edge
 
 
+@lru_cache(maxsize=None)
+def _pn_near_finder(profile_name: str, corners: tuple, radius: float = 24.0) -> np.ndarray:
+    """PN cells within `radius` cells of one of the given (detected) finders."""
+    lay = build_codec(profile_name).layout
+    pts = _pn_points(profile_name)[0].reshape(-1, 2)
+    fc = lay.finder_centers[list(corners)]
+    return np.min(np.linalg.norm(pts[:, None, :] - fc[None, :, :], axis=2), axis=1) < radius
+
+
 FINDER_CORNER_OFFS = np.array([[-3.5, -3.5], [3.5, -3.5], [3.5, 3.5], [-3.5, 3.5]])
 
 
@@ -252,16 +261,28 @@ def orient(gray_blur: np.ndarray, fs: list[Finder], profiles: list[str]):
             if H is None:
                 continue
             if len(corners) == 4:
-                sel = slice(None)
+                usable = np.ones(len(pn_edge), bool)
             else:  # skip the two edges running into the lost finder
-                sel = np.isin(pn_edge, [e for e in range(4) if e in corners and (e + 1) % 4 in corners])
-            proj = cv2.perspectiveTransform(pn_pts[sel], H).reshape(-1, 2)
-            v = _sample(gray_blur, proj)[:, 0]
-            sd = v.std()
-            if sd < 1e-3:
+                usable = np.isin(pn_edge, [e for e in range(4) if e in corners and (e + 1) % 4 in corners])
+            proj = cv2.perspectiveTransform(pn_pts, H).reshape(-1, 2)
+            v_all = _sample(gray_blur, proj)[:, 0]
+            # Score the whole strip AND only its part near the finders, keep the better: H is pinned at
+            # the finders, while lens distortion bows mid-edge cells off by more than a cell on dense grids.
+            near = usable & _pn_near_finder(name, tuple(corners))
+            best = None
+            for sel in (usable, near):
+                if sel.sum() < 24:
+                    continue
+                v = v_all[sel]
+                sd = v.std()
+                if sd < 1e-3:
+                    continue
+                sc = float(np.mean((v - v.mean()) / sd * expect_all[sel]))
+                best = sc if best is None else max(best, sc)
+            if best is None:
                 continue
             known = {k: np.array([f.x, f.y]) for k, f in zip(corners, ordered)}
-            scored.append((float(np.mean((v - v.mean()) / sd * expect_all[sel])), name, H, known))
+            scored.append((best, name, H, known))
     scored.sort(key=lambda t: -t[0])
     return scored
 
@@ -461,6 +482,46 @@ def equalise(N: np.ndarray, beta: float) -> np.ndarray:
     return N + beta * (N - cv2.filter2D(N, -1, _CROSS, borderType=cv2.BORDER_REFLECT))
 
 
+@lru_cache(maxsize=None)
+def _blur_fit_cells(profile_name: str):
+    """Known cells (finders, alignment, PN, quiet zone) whose 4 neighbours are also known and differ
+    from them: (rows, cols, own value, neighbour mean) — the samples that reveal how much blur leaks."""
+    lay = build_codec(profile_name).layout
+    F = lay.fixed.astype(np.float32)
+    known = np.pad(lay.fixed >= 0, 1, constant_values=False)
+    nb_known = known[:-2, 1:-1] & known[2:, 1:-1] & known[1:-1, :-2] & known[1:-1, 2:]
+    Fp = np.pad(F, 1, mode="edge")
+    m = (Fp[:-2, 1:-1] + Fp[2:, 1:-1] + Fp[1:-1, :-2] + Fp[1:-1, 2:]) / 4
+    sel = known[1:-1, 1:-1] & nb_known & (np.abs(F - m) >= 0.25)
+    r, c = np.nonzero(sel)
+    return r, c, F[sel], m[sel]
+
+
+def estimate_beta(N: np.ndarray, lay: Layout) -> float:
+    """Equaliser strength that undoes THIS frame's blur. Model each known cell as
+    observed = a + p*own + q*neighbour_mean; the leaked fraction is k = q/(p+q) and the first-order
+    inverse is equalise(beta = k/(1-k)). Multi-level (gray) cells need this: an over-strong beta keeps
+    the sign of a B/W cell but throws intermediate levels to the extremes."""
+    r, c, x, m = _blur_fit_cells(lay.profile.name)
+    if len(x) < 30:
+        return EQ_BETAS[0]
+    y = N[r, c].mean(axis=1)
+    A = np.stack([np.ones_like(x), x, m], axis=1)
+    (_, p, q), *_ = np.linalg.lstsq(A, y, rcond=None)
+    if p <= 0.05 or p + q <= 0:
+        return EQ_BETAS[0]
+    k = float(np.clip(q / (p + q), 0.0, 0.7))
+    return k / (1.0 - k)
+
+
+def eq_betas(N: np.ndarray, lay: Layout) -> tuple[float, ...]:
+    """Equaliser strengths to try, best guess first."""
+    if lay.profile.palette != "gray":
+        return EQ_BETAS  # B/W and colour: validated on real recordings, tolerant of overshoot
+    b = estimate_beta(N, lay)
+    return tuple(dict.fromkeys(round(x, 3) for x in (b, b * 0.6, b * 1.4, 0.0)))
+
+
 def classify(N: np.ndarray, lay: Layout):
     """-> (scrambled byte stream, per-byte confidence, symbols)."""
     bpc = lay.profile.bits_per_cell
@@ -471,8 +532,12 @@ def classify(N: np.ndarray, lay: Layout):
         sym = (g > 0.5).astype(np.uint8)
         margin = np.abs(g - 0.5) * 2
     else:
-        P = PALETTES[bpc]
-        d = np.sqrt(((X[:, None, :] - P[None, :, :]) ** 2).sum(-1))
+        P = palette(bpc, lay.profile.palette)
+        if lay.profile.palette == "gray":
+            # luma only: averaging R,G,B cuts noise and ignores the camera's colour cast
+            d = np.abs(X.mean(axis=1)[:, None] - P[None, :, 0])
+        else:
+            d = np.sqrt(((X[:, None, :] - P[None, :, :]) ** 2).sum(-1))
         part = np.partition(d, 1, axis=1)
         sym = d.argmin(axis=1).astype(np.uint8)
         margin = part[:, 1] - part[:, 0]
@@ -547,7 +612,7 @@ def read_frame(
     name, N = chosen
     codec: FrameCodec = build_codec(name)
     out = None
-    for beta in EQ_BETAS:
+    for beta in eq_betas(N, codec.layout):
         stream, conf, _ = classify(equalise(N, beta), codec.layout)
         out = codec.decode(stream, conf, skip=skip)
         if out is not None:

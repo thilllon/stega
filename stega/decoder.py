@@ -150,7 +150,7 @@ def decode_video(
     out: str | os.PathLike | None = None,
     profile: str = "auto",
     workers: int | None = None,
-    max_width: int = 1920,
+    max_width: int = 3840,
     progress=None,
     keep_going: bool = False,
 ) -> DecodeReport:

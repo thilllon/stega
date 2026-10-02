@@ -994,7 +994,7 @@ class CamSim:
 # --------------------------------------------------------------------------------------
 def simulate(in_path, out_path, preset="phone", seed=0, start=0.0, duration=None, cam_fps=None,
              out_size=(1920, 1080), progress=False, dump_frames=None, dump_every=30, workers=None,
-             encoder_threads=1) -> dict:
+             encoder_threads=1, bitrate=None) -> dict:
     """Simulate a phone recording of `in_path` played on a monitor; write H.264 MP4 to `out_path`.
 
     dump_frames/dump_every: write every N-th frame of the *encoded* output as PNG into that dir.
@@ -1011,7 +1011,13 @@ def simulate(in_path, out_path, preset="phone", seed=0, start=0.0, duration=None
         os.makedirs(dump_frames, exist_ok=True)
     workers = workers or max(2, min(8, (os.cpu_count() or 4) - 4))
     reader = _FrameReader(in_path, info["width"], info["height"], start, duration)
-    enc = _open_encoder(out_path, W, H, sim.cam_fps, sim.P["bitrate"], sim.P["x264_preset"], encoder_threads)
+    # Preset bitrates are tuned for a 1080p30 recording. A phone raises its bitrate with the pixel rate
+    # (4K60 records at ~5-8x the 1080p30 rate), so scale likewise unless an explicit bitrate is given.
+    if bitrate is None:
+        scale = (W * H * sim.cam_fps) / (1920 * 1080 * 30.0)
+        bitrate = int(_parse_rate(sim.P["bitrate"]) * max(1.0, scale))
+    sim.summary.setdefault("encoder", {})["bitrate_used"] = int(_parse_rate(bitrate)) if isinstance(bitrate, str) else int(bitrate)
+    enc = _open_encoder(out_path, W, H, sim.cam_fps, bitrate, sim.P["x264_preset"], encoder_threads)
     frames: dict[int, np.ndarray] = {}
     disp_means: dict[int, float] = {}
     n_read = 0

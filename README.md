@@ -132,12 +132,50 @@ VERDICT: good. Record the real transmission the same way.
 | dense    | 240×135 |  8 | 1 | 40/242 | 2998 | 10  |  ~44 s | steady, close, 1080p+ |
 | color4   | 160×90  | 12 | 2 | 48/244 | 2330 | 10  |  ~56 s | 1080p+ (color needs resolution) |
 | color8   | 137×77  | 14 | 3 | 56/253 | 2336 | 7.5 |  ~75 s | steady, in focus, 1080p+ |
+| uhd      | 480×270 |  8 | 2 | 48/254 | 24401 | 30 |  ~1.7 s | **4K screen + 4K/60 fps recording** — see below |
+| uhd3     | 480×270 |  8 | 3 | 56/254 | 35212 | 30 |  ~1.2 s | same, experimental |
 
 `encode` also takes `--hold N` (video frames each code frame is shown; lower = faster but needs a
 higher-fps camera) and `--overhead F` (extra repair frames per generation; lower = shorter but less
 margin). **Start with `balanced`; once `check` reports "good", move up to `fast`/`color4`/`dense`.**
 The fast profiles trade robustness for speed — they need a steady, close, in-focus 1080p/60 fps recording.
 To push further, `dense --hold 2 --overhead 0.12` reaches ~26 s for 1 MB but needs excellent capture.
+
+## High-density 4K mode (toward 270 MB in 5 minutes)
+
+The `uhd` profiles draw a 3840×2160 code canvas, hold each code frame for 2 frames at 60 Hz
+(30 code frames/s), and are decoded from a 4K/60 fps recording at native resolution.
+
+| profile | net rate | per 5 min of video | time for 270 MB |
+|---------|---------:|-------------------:|----------------:|
+| `uhd`  (8 px, 2 bit colour, overhead 12%) | 5.1 Mbps | ~184 MB | ~7.3 min |
+| `uhd3` (8 px, 3 bit colour, overhead 10%) | 7.4 Mbps | ~265 MB | ~5.1 min |
+
+Status, measured with the 4K phone simulator (`camsim --size 3840x2160 --cam-fps 60`):
+
+- **`uhd` decodes in 5 of 8 randomly sampled handheld setups.** When it works, every code frame is
+  recovered; when it fails, almost every capture fails. Failures cluster at high moiré (the monitor's RGB
+  subpixel stripes aliasing with the camera grid — a *colour* pattern that hurts colour cells) and
+  depend on distance. Because the outcome is decided by the setup, **run `stega check` on a 10 s trial and
+  move the phone slightly until it reports "good"**, then record the full transmission from there.
+- **`uhd3` reaches ~91% of its code frames** — just short of what its fountain overhead covers. It is the
+  configuration that meets 270 MB / 5 min on paper; making it reliable is the next workstream
+  (sub-framing so that rolling-shutter-torn captures are not discarded whole).
+- Even when decoding succeeds, ~50% of captures are torn across a code-frame change (hold=2 at 60 fps is
+  the limit); those are currently discarded entirely.
+
+Requirements and pitfalls:
+- **A real 3840×2160 monitor showing the video 1:1.** A laptop panel (e.g. 2880/3024/3456 px wide)
+  resamples a 4K video by a non-integer factor and smears 8 px cells before the camera sees them.
+- A phone recording **4K at 60 fps**, HDR off, focus/exposure locked. Expect ~3.5 GB of 4K recording
+  per 5 minutes; the encoded code video itself is ~2.4 GB (≈63 Mbps).
+- Decode at native resolution (the default `--max-width 3840` does this; don't lower it).
+
+Why colour and not gray levels? Luma is not chroma-subsampled, so storing 2–3 bits as 4–8 gray levels
+looked attractive. Measured, it loses: a capture exposed across a code-frame change blends the old and
+new frame, which keeps a *binary* per-channel colour decision on one side but turns a mid gray into a
+different *valid* level. Gray palettes remain available (`Profile(..., palette="gray")`) for
+experiments with longer holds.
 
 ## Verified results
 
@@ -178,7 +216,7 @@ rolling-shutter-torn frames are simply erasures.
 | detector | `stega/detector.py` | finders, homography, refinement, normalisation, equaliser, classify ← *and this* |
 | encoder/decoder | `stega/encoder.py`, `stega/decoder.py` | make MP4 / multi-process, multi-clip, multi-session decode |
 | video I/O | `stega/video_io.py` | ffmpeg pipe (HEVC/HDR/rotation-metadata safe) |
-| channel simulator | `stega/camsim.py` | independent phone-recapture model (for testing without a phone) |
+| channel simulator | `stega/camsim.py` | independent phone-recapture model (for testing without a phone); H.264 bitrate scales with the recording's pixel rate like a phone's (override with `bitrate=`) |
 | benchmark | `scripts/bench.py` | profile × capture-condition sweep |
 
 ## Command reference
@@ -189,7 +227,7 @@ stega encode INPUT -o OUT.mp4 [-p PROFILE] [--hold N]      file -> MP4
              [--overhead F] [--loops N] [--lead-in SEC] [--crf N] [--no-compress]
 stega check  RECORDING [-p PROFILE] [-n FRAMES]            rate a trial recording/photo
 stega decode REC [REC ...] [-o OUT|DIR/] [-p auto|PROFILE] recording(s) -> file
-             [-j WORKERS] [--max-width PX] [--keep-going] [--timeline FILE.json]
+             [-j WORKERS] [--max-width PX (default 3840)] [--keep-going] [--timeline FILE.json]
 stega frame  [-p PROFILE] [-o frame.png]                   write one sample code frame (to inspect/print)
 ```
 
