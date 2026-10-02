@@ -194,6 +194,13 @@ experiments with longer holds.
 
 ## Verified results
 
+- **270 MiB in a 5.1-minute video, through a simulated 4K/60 phone recording:** a 270 MiB random file
+  was encoded with `uhd3` (12% overhead → 308 s of video, 3.4 GB), passed through `stega.camsim`
+  (handheld 4K/60 phone, 96 Mbps H.264, a setup `stega check` rates "good"), and decoded
+  **byte-identical** (SHA-256 match). Encode 16 min, simulation 29 min, decode 21 min on an M-series Mac.
+  The margin is thin: recovery became possible at capture 17,918 of 17,933 — use `--overhead 0.2` or more
+  for real recordings (~5.4 min of video).
+
 - **Real phone (Galaxy S23, 720p/30 fps, handheld):** 1 MB recovered byte-identical, SHA-256 match,
   including a two-clip recording (interrupted by a call, resumed) combined into one decode.
 - **Simulator sweep (`scripts/bench.py`):** all 5 profiles × 3 capture presets (`mild`/`phone`/`harsh`)
