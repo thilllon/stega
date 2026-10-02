@@ -67,10 +67,15 @@ def test_frame_codec_corrects_byte_errors(name):
     bpc = codec.layout.profile.bits_per_cell
     stream = np.packbits(symbols_to_bits(cells, bpc)[: codec.layout.capacity_bytes * 8])
     rng = np.random.default_rng(0)
-    # byte errors spread over the frame at 60% of what one RS codeword can correct
-    n_err = int(len(stream) * 0.6 * (codec.nsym / 2) / codec.block_lens[0])
-    idx = rng.choice(len(stream), n_err, replace=False)
-    stream[idx] ^= rng.integers(1, 256, n_err, dtype=np.uint8)
+    # exactly 60% of one codeword's correction capacity in EVERY block (uniform random placement would
+    # make many-block frames, e.g. 119 blocks at 4K, fail on Poisson tails rather than on capacity)
+    per_block = int(0.6 * codec.nsym / 2)
+    block_of = np.empty(len(stream), np.int64)  # stream position -> RS block index
+    for b, s in enumerate(codec.block_slices()):
+        block_of[np.isin(codec.interleave, np.arange(s.start, s.stop))] = b
+    for b in range(len(codec.block_lens)):
+        idx = rng.choice(np.flatnonzero(block_of == b), per_block, replace=False)
+        stream[idx] ^= rng.integers(1, 256, per_block, dtype=np.uint8)
     out = codec.decode(stream, np.ones(len(stream), np.float32))
     assert out is not None
     assert out[0] == hdr and out[1] == sym
@@ -79,11 +84,12 @@ def test_frame_codec_corrects_byte_errors(name):
 def _perspective_capture(img, seed):
     r = np.random.default_rng(seed)
     h, w = img.shape[:2]
-    W, H = 1920, 1080
+    W, H = w, h  # a camera of the screen's own resolution (1080p screen -> 1080p, 4K screen -> 4K)
+    px = W / 1920  # geometric jitter scales with resolution; blur/noise stay in camera pixels
     sc = r.uniform(0.7, 0.85)
     base = np.float32([[W * (1 - sc) / 2, H * (1 - sc) / 2], [W * (1 + sc) / 2, H * (1 - sc) / 2],
                        [W * (1 + sc) / 2, H * (1 + sc) / 2], [W * (1 - sc) / 2, H * (1 + sc) / 2]])  # fmt: skip
-    dst = base + r.uniform(-70, 70, (4, 2)).astype(np.float32)
+    dst = base + r.uniform(-70 * px, 70 * px, (4, 2)).astype(np.float32)
     M = cv2.getPerspectiveTransform(np.float32([[0, 0], [w, 0], [w, h], [0, h]]), dst)
     out = cv2.warpPerspective(img, M, (W, H), borderValue=(30, 30, 30))
     # mild barrel distortion
@@ -130,3 +136,43 @@ def test_frame_with_one_finder_occluded(name, hidden):
     res = read_frame(cap, list(PROFILES))
     assert res.status == "ok", (res.status, res.pn_score, res.fixed_ber)
     assert res.symbol == sym
+
+
+def _gray_profile(monkeypatch):
+    from stega.profiles import Profile
+
+    p = Profile("t_gray4", pid=200, cell_px=12, bits_per_cell=2, ecc_nsym=48, hold_frames=3, palette="gray")
+    monkeypatch.setitem(PROFILES, p.name, p)  # in-process only: spawned decoder workers never see it
+    return p.name
+
+
+@pytest.mark.parametrize("bpc", [2, 3])
+def test_gray_palette_is_gray_coded(bpc):
+    from stega.render import palette
+
+    P = palette(bpc, "gray")
+    by_brightness = np.argsort(P[:, 0])
+    for a, b in zip(by_brightness, by_brightness[1:]):
+        assert bin(int(a) ^ int(b)).count("1") == 1  # adjacent luma levels differ in exactly one bit
+    assert np.allclose(P[:, 0], P[:, 1]) and np.allclose(P[:, 1], P[:, 2])  # pure luma, no chroma
+
+
+def test_gray_palette_survives_blurred_capture(monkeypatch):
+    """Multi-level cells need the equaliser strength matched to the actual blur (a fixed strong
+    equaliser throws mid levels to the extremes); the decoder estimates it from known cells."""
+    from stega.detector import estimate_beta
+
+    name = _gray_profile(monkeypatch)
+    codec = build_codec(name)
+    hdr = FrameHeader(codec.layout.profile.pid, 7, 1, 256, 0, 3)
+    sym = os.urandom(codec.symbol_size)
+    img = render_frame(codec.layout, codec.encode(hdr, sym))
+    betas = []
+    for sigma in (0.0, 2.5):
+        cap = _perspective_capture(img, seed=4)
+        if sigma:
+            cap = cv2.GaussianBlur(cap, (0, 0), sigma)
+        r = read_frame(cap, [name], debug=True)
+        assert r.status == "ok" and r.symbol == sym, (sigma, r.status)
+        betas.append(estimate_beta(r.debug["N"], codec.layout))
+    assert betas[1] > betas[0] + 0.1  # more blur -> stronger equalisation

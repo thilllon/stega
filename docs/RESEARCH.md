@@ -292,6 +292,19 @@ Realistic targets:
 5. Optional adaptation: Strata-style layered codes, or per-generation profiles that change cell size with
    received quality.
 
+Measured so far (4K / 270 MB-in-5-min workstream, simulator):
+- **Colour beats gray levels at equal bits/cell.** 2-bit gray (4 luma levels) decoded only the captures
+  that did not straddle a code-frame change (exactly 2 of 3 at hold=3, ~0 at hold=2), while 2-bit colour
+  decoded ~99%. Exposure across a frame change blends two frames: a binary per-channel colour decision lands
+  on one of them; an amplitude level lands on a third, valid-looking level. 4:2:0 chroma subsampling was not
+  the binding limit at ≥8 px cells.
+- **Multi-level cells need a blur-matched equaliser.** The fixed strong cell equaliser tuned for B/W raised
+  4-level symbol errors from 0% to 32%; estimating the blur per frame from known cells
+  (`detector.estimate_beta`, observed = a + p·own + q·neighbour-mean, β = k/(1−k)) restored ~0%.
+- **4K at hold=2 is tear-limited:** even successful runs lose ~50% of captures to rolling-shutter tears,
+  and success across sampled setups is ~5/8, driven by chromatic moiré at certain distances.
+- **Big frames are fragile:** a 4K frame has ~119 RS codewords and is lost if any fails → sub-framing.
+
 ### (b) Semi-invisible modulation experiments
 
 | experiment | method | expected capacity (vs visible) `[estimate]` | main risk |

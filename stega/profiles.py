@@ -22,6 +22,7 @@ class Profile:
     fps: int = 30
     quiet: int = 2  # white quiet-zone cells around the grid
     align_step_px: int = 220  # target spacing of the alignment-pattern lattice, in canvas pixels
+    palette: str = "rgb"  # "rgb": colour cube corners | "gray": 2**bits_per_cell luma levels (immune to 4:2:0)
 
     @property
     def cols(self) -> int:
@@ -54,6 +55,16 @@ PROFILES: dict[str, Profile] = {
         # 1080p. Smaller cells (6-8 px) go faster still but need excellent, close, in-focus capture, so
         # they are reachable via `dense --hold 2` rather than shipped as their own profile.
         Profile("fast", pid=10, cell_px=10, bits_per_cell=1, ecc_nsym=40, hold_frames=2),
+        # 4K screen + 4K/60 fps recording (issue #1). Each code frame is held 2 frames at 60 Hz -> 30 code
+        # frames/s; decode recordings at native resolution. Colour palettes beat gray levels here: a capture
+        # exposed across a frame change blends old/new frames, which keeps a binary per-channel decision but
+        # turns a mid gray into a different valid level.
+        Profile("uhd", pid=30, cell_px=8, bits_per_cell=2, ecc_nsym=48, hold_frames=2,
+                width=3840, height=2160, fps=60),
+        # 3 bits/cell: ~265 MB per 5 min in theory, but only ~91% frame coverage in the 4K phone simulation
+        # (rolling-shutter tears discard whole frames) -> experimental until sub-framing lands.
+        Profile("uhd3", pid=31, cell_px=8, bits_per_cell=3, ecc_nsym=56, hold_frames=2,
+                width=3840, height=2160, fps=60),
     ]
 }
 

@@ -199,7 +199,7 @@ def main(argv=None) -> int:
     s.add_argument("-o", "--output", default=None, help="output file, or directory (existing or ending in /); default: stored name in cwd")
     s.add_argument("-p", "--profile", default="auto", choices=["auto", *names])
     s.add_argument("-j", "--workers", type=_positive, default=None)
-    s.add_argument("--max-width", type=int, default=1920, help="downscale frames so the longest side <= this (0 = native)")
+    s.add_argument("--max-width", type=int, default=3840, help="downscale frames so the longest side <= this (0 = native; keep >= 3840 for 4K profiles)")
     s.add_argument("--keep-going", action="store_true", help="process the whole video even after success (for statistics)")
     s.add_argument("--timeline", default=None, help="write per-frame status JSON here")
     s.set_defaults(fn=cmd_decode)
@@ -208,7 +208,7 @@ def main(argv=None) -> int:
     s.add_argument("input", help="a few seconds of recording, or a photo of one code frame")
     s.add_argument("-p", "--profile", default="auto", choices=["auto", *names])
     s.add_argument("-n", "--frames", type=_positive, default=40, help="how many frames to sample")
-    s.add_argument("--max-width", type=int, default=1920)
+    s.add_argument("--max-width", type=int, default=3840)
     s.set_defaults(fn=cmd_check)
 
     s = sub.add_parser("frame", help="write a sample code frame PNG")

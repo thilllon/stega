@@ -6,6 +6,8 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+from functools import lru_cache
+
 from .layout import Layout, banner_bits
 
 PALETTES = {
@@ -19,6 +21,30 @@ PALETTES = {
 LEVEL_LO, LEVEL_HI = 16, 235  # keep off the clipping rails of video range
 
 
+def gray_levels(n: int) -> np.ndarray:
+    """Normalised luma (0..1, darkest first) of the n gray levels a "gray" palette uses.
+
+    The display (gamma) and the camera (tone curve) both bend this scale, so evenly spaced code values
+    are not evenly spaced in the recording. Spacing only matters relative to the decoder, which
+    normalises each cell against the local black/white and picks the nearest of these same levels."""
+    return np.linspace(0.0, 1.0, n, dtype=np.float32)
+
+
+@lru_cache(maxsize=None)
+def palette(bits_per_cell: int, kind: str = "rgb") -> np.ndarray:
+    """(2**bits_per_cell, 3) normalised RGB, indexed by symbol value."""
+    if kind == "rgb":
+        return PALETTES[bits_per_cell]
+    if kind == "gray":
+        n = 1 << bits_per_cell
+        levels = gray_levels(n)
+        pal = np.empty((n, 3), np.float32)
+        for i in range(n):  # Gray code: the likeliest error (adjacent level) flips exactly one bit
+            pal[i ^ (i >> 1)] = levels[i]
+        return pal
+    raise ValueError(f"unknown palette {kind!r}")
+
+
 def cell_grid_rgb(layout: Layout, data_symbols: np.ndarray | None, fill_gray: int | None = None) -> np.ndarray:
     """(rows, cols, 3) uint8 grid of cell colours."""
     bpc = layout.profile.bits_per_cell
@@ -30,8 +56,8 @@ def cell_grid_rgb(layout: Layout, data_symbols: np.ndarray | None, fill_gray: in
     if data_symbols is None:
         grid[r, c] = fill_gray if fill_gray is not None else 128
     else:
-        pal = PALETTES[bpc]
-        colors = (LEVEL_LO + pal * (LEVEL_HI - LEVEL_LO)).astype(np.uint8)
+        pal = palette(bpc, layout.profile.palette)
+        colors = np.round(LEVEL_LO + pal * (LEVEL_HI - LEVEL_LO)).astype(np.uint8)
         grid[r, c] = colors[data_symbols]
     return grid
 
