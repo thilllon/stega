@@ -10,13 +10,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import container
-from .fountain import FountainEncoder
+from .fountain import FountainEncoder, generation_size
 from .framing import FrameHeader, build_codec
 from .profiles import get_profile
 from .render import render_banner, render_frame
 from .video_io import VideoWriter
 
-GEN_SIZE = 256
 
 
 @dataclass
@@ -39,8 +38,9 @@ def plan(profile_name: str, n_bytes: int, overhead: float = 0.25, hold: int | No
     hold = hold or p.hold_frames
     s = codec.symbol_size
     k = max(1, math.ceil(n_bytes / s))
-    gens = math.ceil(k / GEN_SIZE)
-    symbols = sum(g_k + max(4, math.ceil(g_k * overhead)) for g_k in (min(GEN_SIZE, k - g * GEN_SIZE) for g in range(gens)))
+    gen = generation_size(k)
+    gens = math.ceil(k / gen)
+    symbols = sum(g_k + max(4, math.ceil(g_k * overhead)) for g_k in (min(gen, k - g * gen) for g in range(gens)))
     frames = math.ceil(symbols / codec.bands)  # each code frame carries `bands` symbols
     secs = frames * hold / p.fps
     return {
@@ -53,6 +53,7 @@ def plan(profile_name: str, n_bytes: int, overhead: float = 0.25, hold: int | No
         "rs_blocks": len(codec.units[0].block_lens) * codec.bands,
         "ecc": f"{p.ecc_nsym}/{codec.units[0].block_lens[0]}",
         "payload_per_frame": codec.frame_payload,
+        "generation": f"{gens}x{gen}",
         "code_fps": p.fps / hold,
         "frames": frames,
         "seconds": secs,
@@ -89,7 +90,7 @@ def encode_file(
     hold = hold or p.hold_frames
     session = secrets.randbits(32) if session is None else session
 
-    fenc = FountainEncoder(blob, codec.symbol_size, GEN_SIZE, session)
+    fenc = FountainEncoder(blob, codec.symbol_size, generation_size(math.ceil(len(blob) / codec.symbol_size)), session)
     order = fenc.schedule(overhead, multiple_of=codec.bands)
     fp = fenc.params
     frames = [order[i : i + codec.bands] for i in range(0, len(order), codec.bands)]

@@ -12,7 +12,9 @@ VERSION = 1
 FLAG_ZLIB = 0x01
 _HDR = struct.Struct(">4sBBHQ32s")  # magic, version, flags, name_len, original_size, sha256
 HEADER_SIZE = _HDR.size
-MAX_SIZE = 1 << 28  # 256 MiB: far beyond what this channel carries; bounds a crafted zlib bomb
+# Largest file a transmission can carry: the frame header's total_len is 32-bit. Decompression is bounded by
+# the declared size anyway (zlib-bomb safe); this only rejects absurd declarations.
+MAX_SIZE = (1 << 32) - 1
 
 
 @dataclass

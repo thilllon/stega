@@ -93,3 +93,11 @@ def test_reader_does_not_duplicate_frames_of_variable_rate_video(tmp_path):
     _ffmpeg("-f", "lavfi", "-i", "testsrc=size=320x240:rate=30:duration=1", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=60:duration=1",
             "-filter_complex", "[0:v][1:v]concat=n=2:v=1[v]", "-map", "[v]", "-fps_mode", "vfr", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(clip))  # fmt: skip
     assert sum(1 for _ in read_frames(str(clip))) == 90
+
+
+def test_container_accepts_files_larger_than_256_mib():
+    """Regression: a 256 MiB cap (sized for the slow early profiles) rejected a fully recovered 270 MiB
+    uhd3 transmission at the very last step. The real limit is the 32-bit total_len in the frame header."""
+    data = bytes(300 * 1024 * 1024)  # compresses to ~300 KB, so the test stays cheap
+    assert container.unpack(container.pack("big.bin", data)).data == data
+    assert container.MAX_SIZE >= 270 * 1024 * 1024

@@ -200,7 +200,7 @@ fine-tuning methodology** transfer directly.
 ```
 file bytes
   └─ [L6] Container (container.py): filename, original size, SHA-256, zlib (only when it helps)
-     └─ [L5] Outer code (fountain.py): generation-based (≤256 symbols) random linear fountain over GF(2)
+     └─ [L5] Outer code (fountain.py): generation-based (256–2048 symbols, sized to the file) random linear fountain over GF(2)
            systematic symbols first, then repair; generations interleaved round-robin to spread bursts
            (any sufficient subset of captured frames reconstructs; lost/blurred/rolling-shutter = erasure)
         └─ [L4] Packet framing (framing.py): 18B header (magic, version, profile id, session, total_len,
@@ -303,7 +303,16 @@ Measured so far (4K / 270 MB-in-5-min workstream, simulator):
   (`detector.estimate_beta`, observed = a + p·own + q·neighbour-mean, β = k/(1−k)) restored ~0%.
 - **4K at hold=2 is tear-limited:** even successful runs lose ~50% of captures to rolling-shutter tears,
   and success across sampled setups is ~5/8, driven by chromatic moiré at certain distances.
-- **Big frames are fragile:** a 4K frame has ~119 RS codewords and is lost if any fails → sub-framing.
+- **Big frames are fragile:** a 4K frame has ~119 RS codewords and is lost if any fails → **sub-framing**
+  (8 horizontal bands, each its own fountain symbol): `uhd3` coverage on a good setup 73% → 98%, and
+  rolling-shutter-torn captures now yield every band above/below the tear.
+- **Band position must not alias with generation.** Once only a few generations remain in the round-robin
+  schedule, band *b* always carried the same generation, so a region read badly (moiré) starved it. Shuffling
+  band assignment per frame fixed it.
+- **Generation count is a reliability parameter at scale.** All generations must complete, so P(success) =
+  P(one)^n. Fixed 256-symbol generations make 270 MB ~255 independent trials (45% success at 86% coverage /
+  25% overhead in an i.i.d. model); ~32 generations of up to 2048 symbols make it ~100%, for ~1 s of decode
+  per generation. Bigger generations remove variance; they do not rescue a mean coverage below 1/(1+overhead).
 
 ### (b) Semi-invisible modulation experiments
 
