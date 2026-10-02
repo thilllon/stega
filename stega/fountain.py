@@ -68,15 +68,21 @@ class FountainEncoder:
         mask = coefficients(self.session, gen, esi, k_g).astype(bool)
         return np.bitwise_xor.reduce(block[mask], axis=0).tobytes()
 
-    def schedule(self, overhead: float, min_repair: int = 4) -> list[tuple[int, int]]:
+    def schedule(self, overhead: float, min_repair: int = 4, multiple_of: int = 1) -> list[tuple[int, int]]:
         """(gen, esi) transmission order: generations interleaved round-robin so a burst of lost
-        frames is spread over all generations; systematic symbols first, then repair symbols."""
+        frames is spread over all generations; systematic symbols first, then repair symbols.
+        `multiple_of`: pad with extra repair symbols so the order fills whole multi-band frames."""
         p = self.params
         per_gen = []
         for g in range(p.n_gens):
             k_g = p.gen_k(g)
             n_rep = max(min_repair, math.ceil(k_g * overhead))
             per_gen.append([(g, e) for e in range(k_g + n_rep)])
+        total, g = sum(map(len, per_gen)), 0
+        while total % multiple_of:
+            per_gen[g].append((g, len(per_gen[g])))
+            total += 1
+            g = (g + 1) % len(per_gen)
         order = []
         for i in range(max(len(x) for x in per_gen)):
             order.extend(x[i] for x in per_gen if i < len(x))

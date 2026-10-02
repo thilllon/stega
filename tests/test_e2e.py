@@ -30,3 +30,16 @@ def test_encode_camsim_decode(tmp_path, preset):
     rep = decode_video(rec, tmp_path, workers=6)
     assert rep.ok, (rep.error, rep.stats, rep.symbols)
     assert (tmp_path / "notes.txt").read_bytes() == src.read_bytes()
+
+
+def test_multi_band_4k_roundtrip(tmp_path):
+    """uhd: 8 independently decodable bands per frame, decoded by the real multi-process decoder."""
+    src = tmp_path / "big.bin"
+    src.write_bytes(os.urandom(300_000))
+    video = tmp_path / "uhd.mp4"
+    rep = encode_file(src, video, "uhd", lead_in=0.3, overhead=0.12)
+    assert rep.code_frames < 30
+    dec = decode_video(video, tmp_path / "out.bin", workers=4)
+    assert dec.ok, (dec.error, dec.stats)
+    assert (tmp_path / "out.bin").read_bytes() == src.read_bytes()
+    assert dec.stats.get("bands_ok", 0) > 0

@@ -58,9 +58,10 @@ def _work(task):
     try:
         r = read_frame(frame, _W_PROFILES, skip=skip)
     except Exception as e:  # a single weird frame must never kill the run
-        return idx, "error:" + type(e).__name__, None, None, 0.0, 1.0
-    payload = (r.header, r.symbol) if r.header else None
-    return idx, r.status, r.profile if r.status in ("ok", "dup") else None, payload, r.pn_score, r.fixed_ber
+        return idx, "error:" + type(e).__name__, None, [], 0.0, 1.0, (0, 0)
+    payloads = [(h, s) for h, s in r.payloads if s]  # every decoded band carries its own fountain symbol
+    prof = r.profile if r.status in ("ok", "dup") else None
+    return idx, r.status, prof, payloads, r.pn_score, r.fixed_ber, (r.bands_ok, r.bands)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -189,15 +190,18 @@ def decode_video(
 
     def handle(result):
         nonlocal locked_profile, completed_at
-        idx, status, prof, payload, pn, ber = result
+        idx, status, prof, payloads, pn, ber, (bands_ok, bands) = result
         stats[status] += 1
-        timeline.append((idx, status, round(pn, 3), round(ber, 4)))
+        if bands:
+            stats["bands_ok"] += bands_ok
+            stats["bands"] += bands
+        timeline.append((idx, status, round(pn, 3), round(ber, 4), bands_ok, bands))
         if prof:
             locked_profile = locked_profile or prof
-        if status == "ok" and payload:
+        for payload in payloads:
             sessions.add(*payload)
-            if completed_at is None and sessions.done():
-                completed_at = idx
+        if payloads and completed_at is None and sessions.done():
+            completed_at = idx
 
     ctx = mp.get_context("spawn")
     max_inflight = workers * 2
