@@ -48,7 +48,7 @@ uv run stega decode rec.mp4 -o out/
 ## How big a file, and how long is the video?
 
 The transmission time is `file_size ÷ (bytes-per-frame × code-frames-per-second)`. Bigger files just
-mean longer videos — there is no separate "max" until the container's hard cap of **256 MiB**, but in
+mean longer videos — there is no separate "max" until the container's hard cap of **4 GiB**, but in
 practice you want to keep videos to a few minutes. Rough guide (playback length; you record ~10–20% more
 than the point where it becomes recoverable):
 
@@ -171,15 +171,19 @@ handheld setups, 12% fountain overhead):
 - **Run `stega check` on a 10 s trial and adjust distance/angle until it reports "good"**, then record the
   full transmission from there. Moiré (the monitor's RGB subpixel stripes aliasing with the camera grid)
   is distance-sensitive and is the main reason a setup fails.
-- Known limit, tracked next: the fountain code is split into independent generations of 256 symbols and
-  *every* generation must complete. At 270 MB that is ~255 generations, so per-generation variance — not
-  average coverage — becomes the deciding risk.
+- **Large files use large fountain generations.** Generations decode independently and *every* one must
+  complete, so P(success) = P(one generation)^n. With fixed 256-symbol generations, 270 MB would be ~255
+  dice that all have to land (at 86% coverage / 25% overhead: 45% success). The encoder now sizes
+  generations to the file — ~32 generations of 256–2048 symbols (270 MB on `uhd3`: 32 × 2048, ~100%) —
+  which costs ~0.5 min of extra decode CPU at 270 MB. Small files are unchanged. The rule that remains:
+  average symbol coverage must exceed 1/(1 + overhead) — 89% at the default 12%, 80% at `--overhead 0.25`.
 
 Requirements and pitfalls:
 - **A real 3840×2160 monitor showing the video 1:1.** A laptop panel (e.g. 2880/3024/3456 px wide)
   resamples a 4K video by a non-integer factor and smears 8 px cells before the camera sees them.
 - A phone recording **4K at 60 fps**, HDR off, focus/exposure locked. Expect ~3.5 GB of 4K recording
-  per 5 minutes; the encoded code video itself is ~2.4 GB (≈63 Mbps).
+  per 5 minutes; the encoded code video itself is ~2.4 GB (`uhd`) to ~3.4 GB (`uhd3`, ≈89 Mbps). Encoding
+  270 MB takes ~16 min and decoding ~11 min on an M-series Mac.
 - Decode at native resolution (the default `--max-width 3840` does this; don't lower it).
 
 Why colour and not gray levels? Luma is not chroma-subsampled, so storing 2–3 bits as 4–8 gray levels
@@ -201,7 +205,7 @@ experiments with longer holds.
 ## How it works
 
 ```
- file ─► container (name, SHA-256, zlib) ─► fountain code (GF(2) random linear, generations of ≤256 symbols)
+ file ─► container (name, SHA-256, zlib) ─► fountain code (GF(2) random linear, ~32 generations of 256–2048 symbols)
       ─► frame: [header 18B | symbol | CRC32] ─► Reed-Solomon(≤255) blocks ─► byte interleave ─► scrambler
       ─► cell symbols (1/2/3 bit) ─► 1920×1080 code frame (4 finders · alignment lattice · PN edge strips)
       ─► H.264 MP4 (each code frame held N video frames)

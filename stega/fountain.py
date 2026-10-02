@@ -19,6 +19,20 @@ from dataclasses import dataclass
 import numpy as np
 
 
+def generation_size(k: int, target_generations: int = 32, lo: int = 256, hi: int = 2048) -> int:
+    """Symbols per generation for a file of `k` source symbols.
+
+    Generations decode independently and *every* one must complete, so
+    P(success) = P(one generation completes) ** n_generations. With many small generations a large file
+    fails on per-generation variance even when the average coverage is comfortably above the threshold
+    (270 MB as 255 generations of 256 at 86% coverage / 25% overhead: 45%; as 32 of 2048: ~100%). So big
+    files get big generations (~`target_generations` of them). Decode cost grows ~k^2 per generation
+    (2048 symbols of 4.3 KB: ~1 s each). Small files keep 256. The size travels in every frame header."""
+    want = math.ceil(k / target_generations)
+    size = 1 << max(0, (want - 1).bit_length())  # next power of two
+    return max(lo, min(hi, size))
+
+
 @dataclass(frozen=True)
 class FountainParams:
     total_len: int  # container length in bytes

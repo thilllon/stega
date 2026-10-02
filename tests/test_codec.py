@@ -236,3 +236,24 @@ def test_single_band_bitstream_is_unchanged(name):
     sym = hashlib.shake_128(name.encode()).digest(codec.symbol_size)
     cells = codec.encode(FrameHeader(codec.layout.profile.pid, 0xC0FFEE, 123456, 256, 3, 77), sym)
     assert hashlib.sha256(cells.tobytes()).hexdigest()[:16] == SINGLE_BAND_GOLDEN[name]
+
+
+def test_generation_size_policy():
+    from stega.fountain import generation_size
+
+    assert generation_size(1) == 256 and generation_size(873) == 256  # small files: unchanged
+    assert generation_size(65234) == 2048  # 270 MB of uhd3 symbols -> 32 generations, not 255
+    for k in (1, 900, 9000, 65234, 10**6):
+        g = generation_size(k)
+        assert 256 <= g <= 2048 and g & (g - 1) == 0
+
+
+def test_large_generation_recovers_with_loss():
+    blob = os.urandom(2048 * 300 - 7)
+    enc = FountainEncoder(blob, symbol_size=300, gen_size=2048, session=11)
+    rng = random.Random(5)
+    dec = FountainDecoder(enc.params, session=11)
+    for gen, esi in enc.schedule(0.15):
+        if rng.random() < 0.88:  # 12% of symbols lost
+            dec.add(gen, esi, enc.symbol(gen, esi))
+    assert dec.done and dec.recover() == blob
