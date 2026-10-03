@@ -84,7 +84,9 @@ def test_frame_codec_corrects_byte_errors(name):
 def _perspective_capture(img, seed):
     r = np.random.default_rng(seed)
     h, w = img.shape[:2]
-    W, H = w, h  # a camera of the screen's own resolution (1080p screen -> 1080p, 4K screen -> 4K)
+    # the camera: 1080p screens are filmed at 1080p (conservative); denser canvases are meant for a 4K/60
+    # phone recording, so they are filmed by a 4K camera (a QHD screen then gets ~1.5 camera px per screen px)
+    W, H = (w, h) if w <= 1920 else (3840, 2160)
     px = W / 1920  # geometric jitter scales with resolution; blur/noise stay in camera pixels
     sc = r.uniform(0.7, 0.85)
     base = np.float32([[W * (1 - sc) / 2, H * (1 - sc) / 2], [W * (1 + sc) / 2, H * (1 - sc) / 2],

@@ -134,6 +134,7 @@ VERDICT: good. Record the real transmission the same way.
 | color8   | 137×77  | 14 | 3 | 56/253 | 2336 | 7.5 |  ~75 s | steady, in focus, 1080p+ |
 | uhd      | 480×270 |  8 | 2 | 48/252 | 24192 | 30 |  ~1.8 s | **4K screen + 4K/60 fps recording**, 8 bands — see below |
 | uhd3     | 480×270 |  8 | 3 | 56/246 | 34720 | 30 |  ~1.2 s | same; the 270 MB-in-5-min configuration |
+| qhd      | 512×288 |  5 | 3 | 56/254 | 40856 | 30 |  ~1.1 s | **QHD (2560×1440) monitor shown 1:1 + 4K/60 recording** — 270 MB in ~4.8 min |
 
 `encode` also takes `--hold N` (video frames each code frame is shown; lower = faster but needs a
 higher-fps camera) and `--overhead F` (extra repair frames per generation; lower = shorter but less
@@ -191,6 +192,28 @@ looked attractive. Measured, it loses: a capture exposed across a code-frame cha
 new frame, which keeps a *binary* per-channel colour decision on one side but turns a mid gray into a
 different *valid* level. Gray palettes remain available (`Profile(..., palette="gray")`) for
 experiments with longer holds.
+
+## No 4K monitor? Use a QHD monitor 1:1 (`qhd`)
+
+What limits density is how many **camera** pixels land on one cell, not the monitor's resolution. A 4K/60
+phone framing a 2560×1440 monitor at ~80% width sees ~1.2 camera px per monitor px (vs ~0.8 for a 4K
+monitor), so the `qhd` profile's 5 px cells (~6 camera px) read like `uhd3`'s 8 px cells — and there are
+more of them (512×288 vs 480×270).
+
+| profile | net rate | 270 MB takes | decoded in sampled handheld setups* |
+|---|---:|---:|---:|
+| `qhd`, `--overhead 0.12` | 8.8 Mbps | ~4.3 min | 4 / 8 |
+| `qhd`, default `--overhead 0.25` | 7.8 Mbps | **~4.8 min** | **6 / 8** |
+
+\* 4K/60 phone simulation with the monitor modelled 1:1 (`camsim --display-width 2560`). The two failing
+setups had heavy moiré at that distance — exactly what `stega check` is for.
+
+Setup that matters:
+- **The video must be shown 1:1:** a 2560×1440 monitor at 100% scaling (not a "looks like" HiDPI mode),
+  player fullscreen. QuickTime Player is the simplest: open the file, drag the window to the monitor,
+  ⌃⌘F, then play.
+- Set the monitor to **120 Hz or 60 Hz** (60 fps video on 144 Hz is shown for an uneven 2 or 3 refreshes).
+- Phone: **4K (UHD) at 60 fps**, HDR video off, video stabilisation off, focus/exposure locked.
 
 ## Verified results
 

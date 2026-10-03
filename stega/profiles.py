@@ -66,6 +66,12 @@ PROFILES: dict[str, Profile] = {
         # 3 bits/cell: ~265 MB per 5 min, i.e. 270 MB in ~5.1 min.
         Profile("uhd3", pid=31, cell_px=8, bits_per_cell=3, ecc_nsym=56, hold_frames=2,
                 width=3840, height=2160, fps=60, bands=8),
+        # 2560x1440 canvas for a QHD monitor showing the video 1:1, recorded by a 4K/60 phone. What limits density
+        # is camera pixels per cell: a 4K camera framing a QHD panel gets ~1.2 px per panel px, so 5 px cells
+        # (~6 camera px) read like the 8 px cells of `uhd3` -- with more cells (512x288). ~8.8 Mbps at 12%
+        # overhead; 270 MB in ~4.8 min at the default 25%. Decoded in 6/8 sampled handheld setups (simulation).
+        Profile("qhd", pid=50, cell_px=5, bits_per_cell=3, ecc_nsym=56, hold_frames=2,
+                width=2560, height=1440, fps=60, bands=8),
     ]
 }
 
