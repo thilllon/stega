@@ -452,7 +452,7 @@ class _FrameJob:
 
 
 class CamSim:
-    def __init__(self, info, preset, seed, out_size, cam_fps):
+    def __init__(self, info, preset, seed, out_size, cam_fps, display_width=None):
         if preset not in PRESETS:
             raise ValueError(f"unknown preset {preset!r}; choose from {list(PRESETS)}")
         P = self.P = PRESETS[preset]
@@ -470,7 +470,9 @@ class CamSim:
 
         # ---------------- display ----------------
         self.lut, dinfo = _display_lut(r_disp, P)
-        native_w = float(r_disp.choice(P["native_width"]))
+        native_w = float(r_disp.choice(P["native_width"]))  # always drawn: keeps the seed's other draws stable
+        if display_width:  # a specific panel, e.g. the video shown 1:1 on a monitor of its own resolution
+            native_w = float(display_width)
         self.pitch = native_w / self.Wd  # native pixels per input pixel
         dinfo["native_width"] = native_w
         self.summary["display"] = dinfo
@@ -994,7 +996,7 @@ class CamSim:
 # --------------------------------------------------------------------------------------
 def simulate(in_path, out_path, preset="phone", seed=0, start=0.0, duration=None, cam_fps=None,
              out_size=(1920, 1080), progress=False, dump_frames=None, dump_every=30, workers=None,
-             encoder_threads=1, bitrate=None) -> dict:
+             encoder_threads=1, bitrate=None, display_width=None) -> dict:
     """Simulate a phone recording of `in_path` played on a monitor; write H.264 MP4 to `out_path`.
 
     dump_frames/dump_every: write every N-th frame of the *encoded* output as PNG into that dir.
@@ -1005,7 +1007,7 @@ def simulate(in_path, out_path, preset="phone", seed=0, start=0.0, duration=None
     Returns a JSON-able summary dict of the sampled channel parameters (+ timing)."""
     t_start = time.perf_counter()
     info = probe(in_path)
-    sim = CamSim(info, preset, seed, tuple(out_size), cam_fps)
+    sim = CamSim(info, preset, seed, tuple(out_size), cam_fps, display_width)
     W, H = sim.W, sim.H
     if dump_frames:
         os.makedirs(dump_frames, exist_ok=True)
@@ -1128,6 +1130,9 @@ def main(argv=None):
     ap.add_argument("--start", type=float, default=0.0)
     ap.add_argument("--duration", type=float, default=None)
     ap.add_argument("--cam-fps", type=float, default=None)
+    ap.add_argument("--display-width", type=int, default=None,
+                    help="native width of the simulated panel (default: drawn from the preset); "
+                         "set it to the video width to model 1:1 playback")
     ap.add_argument("--size", default="1920x1080", help="output WxH (even)")
     ap.add_argument("--dump-frames", default=None, metavar="DIR", help="write PNG snapshots of output frames")
     ap.add_argument("--dump-every", type=int, default=30, metavar="N")
@@ -1139,7 +1144,8 @@ def main(argv=None):
     w, h = (int(x) for x in a.size.lower().split("x"))
     summary = simulate(a.input, a.output, preset=a.preset, seed=a.seed, start=a.start, duration=a.duration,
                        cam_fps=a.cam_fps, out_size=(w, h), progress=not a.quiet, dump_frames=a.dump_frames,
-                       dump_every=a.dump_every, workers=a.workers, encoder_threads=a.encoder_threads)
+                       dump_every=a.dump_every, workers=a.workers, encoder_threads=a.encoder_threads,
+                       display_width=a.display_width)
     print(json.dumps(summary, indent=1))
 
 
